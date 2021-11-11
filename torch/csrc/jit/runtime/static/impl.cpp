@@ -113,6 +113,7 @@ void OptimizeGraph(
     // to exposed folders.
 #ifdef FBCODE_CAFFE2
     ReplaceWithCopy(graph);
+    ReplaceWithMaybeCopy(graph);
     FuseListUnpack(graph);
     EnableStaticRuntimeLayerNorm(graph);
 #endif
@@ -1491,7 +1492,7 @@ void StaticRuntime::check_for_memory_leak(bool output_returned) {
       }
       const std::string error_msg = "Output " + c10::to_string(i) + ", %" +
           val->debugName() + " of node " + c10::to_string(n) +
-          " was not cleaned up";
+        " which has kind " + pnode.node()->kind().toQualString() + " was not cleaned up";
       if (output_ivalues.count(ival) == 0) {
         // check for intermediates
         if (!ival->isNone()) {
