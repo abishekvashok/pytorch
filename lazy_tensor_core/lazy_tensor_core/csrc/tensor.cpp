@@ -26,26 +26,22 @@ LazyTensor LazyTensor::Create(const at::Tensor& tensor, const Device& device) {
   return xtensor;
 }
 
-LazyTensor LazyTensor::Create(
-    compiler::BackendDataPtr handle,
-    c10::optional<at::ScalarType> logical_element_type) {
-  LazyTensor xtensor(std::move(handle), logical_element_type);
+LazyTensor LazyTensor::Create(torch::lazy::Value ir_value,
+                              const Device& device) {
+  LazyTensor xtensor(std::move(ir_value), device);
   LazyGraphExecutor::Get()->RegisterTensor(xtensor.data_ptr());
   return xtensor;
 }
 
-LazyTensor LazyTensor::Create(
-    torch::lazy::Value ir_value, const Device& device,
-    c10::optional<at::ScalarType> logical_element_type) {
-  LazyTensor xtensor(std::move(ir_value), device, logical_element_type);
+LazyTensor LazyTensor::Create(std::shared_ptr<View> view,
+                              const Device& device) {
+  LazyTensor xtensor(std::move(view), device);
   LazyGraphExecutor::Get()->RegisterTensor(xtensor.data_ptr());
   return xtensor;
 }
 
-LazyTensor LazyTensor::Create(
-    std::shared_ptr<View> view, const Device& device,
-    c10::optional<at::ScalarType> logical_element_type) {
-  LazyTensor xtensor(std::move(view), device, logical_element_type);
+LazyTensor LazyTensor::Create(compiler::BackendDataPtr handle) {
+  LazyTensor xtensor(std::move(handle));
   LazyGraphExecutor::Get()->RegisterTensor(xtensor.data_ptr());
   return xtensor;
 }
@@ -57,22 +53,16 @@ LazyTensor LazyTensor::Create(std::shared_ptr<Data> data) {
 LazyTensor::LazyTensor(const at::Tensor& tensor, const Device& device)
     : data_(std::make_shared<Data>(tensor, device)) {}
 
-LazyTensor::LazyTensor(compiler::BackendDataPtr handle,
-                       c10::optional<at::ScalarType> logical_element_type)
-    : data_(std::make_shared<Data>(handle, Device(handle->device()),
-                                   logical_element_type)) {}
+LazyTensor::LazyTensor(compiler::BackendDataPtr handle)
+    : data_(std::make_shared<Data>(handle, handle->device())) {}
 
-LazyTensor::LazyTensor(torch::lazy::Value ir_value, const Device& device,
-                       c10::optional<at::ScalarType> logical_element_type)
-    : data_(std::make_shared<Data>(std::move(ir_value), device,
-                                   logical_element_type)) {
+LazyTensor::LazyTensor(torch::lazy::Value ir_value, const Device& device)
+    : data_(std::make_shared<Data>(std::move(ir_value), device)) {
   TryLimitGraphSize();
 }
 
-LazyTensor::LazyTensor(std::shared_ptr<View> view, const Device& device,
-                       c10::optional<at::ScalarType> logical_element_type)
-    : data_(std::make_shared<Data>(std::move(view), device,
-                                   logical_element_type)) {}
+LazyTensor::LazyTensor(std::shared_ptr<View> view, const Device& device)
+    : data_(std::make_shared<Data>(std::move(view), device)) {}
 
 LazyTensor::LazyTensor(std::shared_ptr<Data> data) : data_(std::move(data)) {}
 
@@ -88,15 +78,7 @@ int64_t LazyTensor::size(int64_t dim) const {
   return tensor_shape.get().size(dim_index);
 }
 
-at::ScalarType LazyTensor::dtype() const {
-  return data()->logical_element_type
-             ? *data()->logical_element_type
-             : shape().get().scalar_type();
-}
-
-c10::optional<at::ScalarType> LazyTensor::dtype_optional() const {
-  return data()->logical_element_type;
-}
+at::ScalarType LazyTensor::dtype() const { return shape().get().scalar_type(); }
 
 lazy_tensors::util::MaybeRef<lazy_tensors::Shape> LazyTensor::shape() const {
   if (data()->view != nullptr) {
@@ -349,8 +331,7 @@ std::shared_ptr<View> LazyTensor::CreateView(ViewInfo view_info) const {
 }
 
 LazyTensor LazyTensor::CreateViewTensor(ViewInfo view_info) const {
-  return Create(CreateView(std::move(view_info)), GetDevice(),
-                dtype_optional());
+  return Create(CreateView(std::move(view_info)), GetDevice());
 }
 
 at::Tensor LazyTensor::ToTensor(bool detached) {
@@ -386,11 +367,6 @@ at::Tensor LazyTensor::ToTensor(bool detached) {
 
 void LazyTensor::ShallowCopyTo(LazyTensor* dest) const {
   dest->SetIrValue(GetIrValue());
-}
-
-void LazyTensor::SetScalarType(
-    c10::optional<at::ScalarType> logical_element_type) {
-  data()->logical_element_type = logical_element_type;
 }
 
 void LazyTensor::SetTensor(at::Tensor tensor) {
@@ -454,24 +430,12 @@ LazyTensor LazyTensor::CopyTensorToDevice(const Device& device) {
 }
 
 LazyTensor LazyTensor::CreateFrom(torch::lazy::Value ir_value) const {
-  return Create(std::move(ir_value), GetDevice(), dtype_optional());
+  return Create(std::move(ir_value), GetDevice());
 }
 
 LazyTensor LazyTensor::CreateFrom(torch::lazy::Value ir_value,
                                   const Device& device) const {
-  return Create(std::move(ir_value), device, dtype_optional());
-}
-
-LazyTensor LazyTensor::CreateFrom(
-    torch::lazy::Value ir_value,
-    c10::optional<at::ScalarType> logical_element_type_opt) const {
-  return Create(std::move(ir_value), GetDevice(), logical_element_type_opt);
-}
-
-LazyTensor LazyTensor::CreateFrom(torch::lazy::Value ir_value,
-                                  const Device& device,
-                                  at::ScalarType logical_element_type) const {
-  return Create(std::move(ir_value), device, logical_element_type);
+  return Create(std::move(ir_value), device);
 }
 
 void LazyTensor::ApplyPendingGraph() {

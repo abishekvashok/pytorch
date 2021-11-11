@@ -94,9 +94,6 @@ class LazyGraphExecutor {
   torch::lazy::Value GetIrValueForScalar(const at::Scalar& value,
                                          const lazy_tensors::Shape& shape,
                                          const Device& device);
-  torch::lazy::Value GetIrValueForScalar(
-      const at::Scalar& value, const lazy_tensors::Shape& shape,
-      c10::optional<at::ScalarType> logical_element_type, const Device& device);
 
  private:
   struct SyncTensorsConfig {
