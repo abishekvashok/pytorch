@@ -1,7 +1,8 @@
 import abc
 import cmath
 import collections.abc
-from typing import NamedTuple, Callable, Sequence, List, Union, Optional, Type, Tuple, Any, cast
+import contextlib
+from typing import NamedTuple, Callable, Sequence, List, Union, Optional, Type, Tuple, Any, cast, Collection
 
 import torch
 
@@ -27,9 +28,8 @@ class ErrorMeta(NamedTuple):
         return self.type(msg)
 
 
-# This is copy-pasted from torch.testing._internal.common_utils.TestCase.dtype_precisions. With this we avoid a
-# dependency on torch.testing._internal at import. See
-# https://github.com/pytorch/pytorch/pull/54769#issuecomment-813174256 for details.
+# Some analysis of tolerance by logging tests from test_torch.py can be found in
+# https://github.com/pytorch/pytorch/pull/32538.
 # {dtype: (rtol, atol)}
 _DTYPE_PRECISIONS = {
     torch.float16: (0.001, 1e-5),
@@ -281,9 +281,18 @@ class Pair(abc.ABC):
         self._unknown_parameters = unknown_parameters
 
     @staticmethod
-    def _check_inputs_isinstance(*inputs: Any, cls: Union[Type, Tuple[Type, ...]]):
-        """Checks if all inputs are instances of a given class and raise :class:`UnsupportedInputs` otherwise."""
+    def _check_inputs_isinstance(
+        *inputs: Any, cls: Union[Type, Tuple[Type, ...]], not_cls: Optional[Union[Type, Tuple[Type, ...]]] = None
+    ) -> None:
+        """Checks if all inputs are instances of a given class and and optionally not of another.
+
+        Raises:
+            UnsupportedInputs: If any condition is not met.
+        """
         if not all(isinstance(input, cls) for input in inputs):
+            raise UnsupportedInputs()
+
+        if not_cls and any(isinstance(input, not_cls) for input in inputs):
             raise UnsupportedInputs()
 
     @staticmethod
@@ -396,11 +405,15 @@ class BooleanPair(Pair):
         actual, expected = self._process_inputs(actual, expected, id=id)
         super().__init__(actual, expected, **other_parameters)
 
-    def _process_inputs(self, actual: Any, expected: Any, *, id: Tuple[Any, ...]) -> Tuple[bool, bool]:
+    @property
+    def _supported_types(self) -> Tuple[Type, ...]:
         cls: List[Type] = [bool]
         if NUMPY_AVAILABLE:
             cls.append(np.bool_)
-        self._check_inputs_isinstance(actual, expected, cls=tuple(cls))
+        return tuple(cls)
+
+    def _process_inputs(self, actual: Any, expected: Any, *, id: Tuple[Any, ...]) -> Tuple[bool, bool]:
+        self._check_inputs_isinstance(actual, expected, cls=self._supported_types)
         error_meta, bools = self._apply_unary(self._to_bool, actual, expected, id=id)
         if error_meta:
             raise UnsupportedInputs(error_meta)
@@ -485,13 +498,17 @@ class NumberPair(Pair):
         self.equal_nan = equal_nan
         self.check_dtype = check_dtype
 
+    @property
+    def _supported_types(self) -> Tuple[Type, ...]:
+        cls = list(self._NUMBER_TYPES)
+        if NUMPY_AVAILABLE:
+            cls.append(np.number)
+        return tuple(cls)
+
     def _process_inputs(
         self, actual: Any, expected: Any, *, id: Tuple[Any, ...]
     ) -> Tuple[Union[int, float, complex], Union[int, float, complex]]:
-        number_types = list(self._NUMBER_TYPES)
-        if NUMPY_AVAILABLE:
-            number_types.append(np.number)
-        self._check_inputs_isinstance(actual, expected, cls=tuple(number_types))
+        self._check_inputs_isinstance(actual, expected, cls=self._supported_types, not_cls=bool)
         error_meta, numbers = self._apply_unary(self._to_number, actual, expected, id=id)
         if error_meta:
             raise UnsupportedInputs(error_meta)
@@ -895,6 +912,8 @@ def originate_pairs(
     expected: Any,
     *,
     pair_types: Sequence[Type[Pair]],
+    sequence_types: Tuple[Type, ...] = (collections.abc.Sequence,),
+    mapping_types: Tuple[Type, ...] = (collections.abc.Sequence,),
     id: Tuple[Any, ...] = (),
     **options: Any,
 ) -> Tuple[Optional[ErrorMeta], Optional[List[Pair]]]:
@@ -908,6 +927,8 @@ def originate_pairs(
         expected (Any): Expected input.
         pair_types (Sequence[Type[Pair]]): Sequence of pair types that will be tried to construct with the inputs.
             First successful pair will be used.
+        sequence_types (Tuple[Type, ...]): Optional types treated as sequences that will be checked elementwise.
+        mapping_types (Tuple[Type, ...]): Optional types treated as mappings that will be checked elementwise.
         id (Tuple[Any, ...]): Optional id of a pair that will be included in an error message.
         **options (Any): Options passed to each pair during construction.
 
@@ -932,9 +953,9 @@ def originate_pairs(
     # We explicitly exclude str's here since they are self-referential and would cause an infinite recursion loop:
     # "a" == "a"[0][0]...
     if (
-        isinstance(actual, collections.abc.Sequence)
+        isinstance(actual, sequence_types)
         and not isinstance(actual, str)
-        and isinstance(expected, collections.abc.Sequence)
+        and isinstance(expected, sequence_types)
         and not isinstance(expected, str)
     ):
         actual_len = len(actual)
@@ -947,7 +968,13 @@ def originate_pairs(
 
         for idx in range(actual_len):
             error_meta, partial_pairs = originate_pairs(
-                actual[idx], expected[idx], pair_types=pair_types, id=(*id, idx), **options
+                actual[idx],
+                expected[idx],
+                pair_types=pair_types,
+                sequence_types=sequence_types,
+                mapping_types=mapping_types,
+                id=(*id, idx),
+                **options,
             )
             if error_meta:
                 return error_meta, None
@@ -956,7 +983,7 @@ def originate_pairs(
 
         return None, pairs
 
-    elif isinstance(actual, collections.abc.Mapping) and isinstance(expected, collections.abc.Mapping):
+    elif isinstance(actual, mapping_types) and isinstance(expected, mapping_types):
         actual_keys = set(actual.keys())
         expected_keys = set(expected.keys())
         if actual_keys != expected_keys:
@@ -973,9 +1000,20 @@ def originate_pairs(
             )
             return error_meta, None
 
-        for key in sorted(actual_keys):
+        keys: Collection = actual_keys
+        # Since the origination aborts after the first failure, we try to be deterministic
+        with contextlib.suppress(Exception):
+            keys = sorted(keys)
+
+        for key in keys:
             error_meta, partial_pairs = originate_pairs(
-                actual[key], expected[key], pair_types=pair_types, id=(*id, key), **options
+                actual[key],
+                expected[key],
+                pair_types=pair_types,
+                sequence_types=sequence_types,
+                mapping_types=mapping_types,
+                id=(*id, key),
+                **options,
             )
             if error_meta:
                 return error_meta, None
@@ -1005,7 +1043,13 @@ def originate_pairs(
 
 
 def assert_equal(
-    actual: Any, expected: Any, *, pair_types: Sequence[Type[Pair]] = (ObjectPair,), **options: Any
+    actual: Any,
+    expected: Any,
+    *,
+    pair_types: Sequence[Type[Pair]] = (ObjectPair,),
+    sequence_types: Tuple[Type, ...] = (collections.abc.Sequence,),
+    mapping_types: Tuple[Type, ...] = (collections.abc.Mapping,),
+    **options: Any,
 ) -> None:
     """Asserts that inputs are equal.
 
@@ -1017,12 +1061,16 @@ def assert_equal(
         expected (Any): Expected input.
         pair_types (Sequence[Type[Pair]]): Sequence of :class:`Pair` types that will be tried to construct with the
             inputs. First successful pair will be used. Defaults to only using :class:`ObjectPair`.
+        sequence_types (Tuple[Type, ...]): Optional types treated as sequences that will be checked elementwise.
+        mapping_types (Tuple[Type, ...]): Optional types treated as mappings that will be checked elementwise.
         **options (Any): Options passed to each pair during construction.
     """
     # Hide this function from `pytest`'s traceback
     __tracebackhide__ = True
 
-    error_meta, pairs = originate_pairs(actual, expected, pair_types=pair_types, **options)
+    error_meta, pairs = originate_pairs(
+        actual, expected, pair_types=pair_types, sequence_types=sequence_types, mapping_types=mapping_types, **options
+    )
     if error_meta:
         raise error_meta.to_error()
 
