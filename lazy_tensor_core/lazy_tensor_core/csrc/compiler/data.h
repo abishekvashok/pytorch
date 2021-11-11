@@ -1,8 +1,9 @@
 #pragma once
 
+#include <torch/csrc/lazy/core/shape.h>
+
 #include <string.h>
 #include "lazy_tensor_core/csrc/device.h"
-#include "lazy_tensors/shape.h"
 
 namespace torch_lazy_tensors {
 namespace compiler {
@@ -21,14 +22,14 @@ class BackendData {
    * */
   using Handle = int64_t;
 
-  BackendData(const Device& device, const lazy_tensors::Shape& shape)
+  BackendData(const Device& device, const torch::lazy::Shape& shape)
       : device_(device), shape_(shape) {}
 
   virtual ~BackendData() {}
 
   const Device& device() const { return device_; }
 
-  const lazy_tensors::Shape& shape() const { return shape_; }
+  const torch::lazy::Shape& shape() const { return shape_; }
 
   Info* info() const { return info_.get(); }
 
@@ -45,7 +46,7 @@ class BackendData {
 
  private:
   Device device_;
-  lazy_tensors::Shape shape_;
+  torch::lazy::Shape shape_;
   std::shared_ptr<Info> info_;
 };
 
